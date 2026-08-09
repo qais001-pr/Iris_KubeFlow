@@ -1,0 +1,136 @@
+# PIPELINE DEFINITION
+# Name: iris-tensorflow-simple
+# Description: Simple TensorFlow Iris training pipeline
+components:
+  comp-train-iris-model:
+    executorLabel: exec-train-iris-model
+    outputDefinitions:
+      artifacts:
+        model_output:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+deploymentSpec:
+  executors:
+    exec-train-iris-model:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - train_iris_model
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.11.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'scikit-learn'\
+          \ 'numpy' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef train_iris_model(\n    model_output: dsl.Output[dsl.Model]\n\
+          ):\n\n    import os\n    import numpy as np\n    import tensorflow as tf\n\
+          \n    from sklearn.datasets import load_iris\n    from sklearn.model_selection\
+          \ import train_test_split\n\n    print(\"=\" * 60)\n    print(\"IRIS TENSORFLOW\
+          \ TRAINING STARTED\")\n    print(\"=\" * 60)\n\n    # --------------------------------------------------------\n\
+          \    # 1. TensorFlow\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[1] TensorFlow\")\n\n    print(\n        \"TensorFlow version:\"\
+          ,\n        tf.__version__\n    )\n\n    # --------------------------------------------------------\n\
+          \    # 2. Load Iris directly\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[2] Loading Iris dataset\")\n\n    iris = load_iris()\n\
+          \n    X = iris.data\n    y = iris.target\n\n    print(\"X shape:\", X.shape)\n\
+          \    print(\"Y shape:\", y.shape)\n\n    print(\n        \"Classes:\",\n\
+          \        iris.target_names\n    )\n\n    # --------------------------------------------------------\n\
+          \    # 3. Train/Test split\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[3] Splitting dataset\")\n\n    X_train, X_test, y_train,\
+          \ y_test = train_test_split(\n        X,\n        y,\n        test_size=0.20,\n\
+          \        random_state=42,\n        stratify=y\n    )\n\n    print(\n   \
+          \     \"Training samples:\",\n        len(X_train)\n    )\n\n    print(\n\
+          \        \"Testing samples:\",\n        len(X_test)\n    )\n\n    # --------------------------------------------------------\n\
+          \    # 4. TensorFlow Normalization\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[4] Creating normalization layer\")\n\n    normalizer =\
+          \ tf.keras.layers.Normalization()\n\n    normalizer.adapt(X_train)\n\n \
+          \   print(\"Normalization ready\")\n\n    # --------------------------------------------------------\n\
+          \    # 5. Create model\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[5] Creating TensorFlow model\")\n\n    model = tf.keras.Sequential([\n\
+          \n        tf.keras.layers.Input(\n            shape=(4,)\n        ),\n\n\
+          \        normalizer,\n\n        tf.keras.layers.Dense(\n            16,\n\
+          \            activation=\"relu\"\n        ),\n\n        tf.keras.layers.Dense(\n\
+          \            8,\n            activation=\"relu\"\n        ),\n\n       \
+          \ tf.keras.layers.Dense(\n            3,\n            activation=\"softmax\"\
+          \n        )\n    ])\n\n    # --------------------------------------------------------\n\
+          \    # 6. Compile\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[6] Compiling model\")\n\n    model.compile(\n\n      \
+          \  optimizer=tf.keras.optimizers.Adam(\n            learning_rate=0.001\n\
+          \        ),\n\n        loss=\"sparse_categorical_crossentropy\",\n\n   \
+          \     metrics=[\n            \"accuracy\"\n        ]\n    )\n\n    # --------------------------------------------------------\n\
+          \    # 7. Model summary\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[7] Model architecture\")\n\n    model.summary()\n\n  \
+          \  # --------------------------------------------------------\n    # 8.\
+          \ Train\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[8] Starting training\")\n\n    history = model.fit(\n\n\
+          \        X_train,\n\n        y_train,\n\n        validation_data=(\n   \
+          \         X_test,\n            y_test\n        ),\n\n        epochs=30,\n\
+          \n        batch_size=16,\n\n        verbose=1\n    )\n\n    print(\"\\nTraining\
+          \ completed\")\n\n    # --------------------------------------------------------\n\
+          \    # 9. Evaluate\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[9] Evaluating model\")\n\n    loss, accuracy = model.evaluate(\n\
+          \        X_test,\n        y_test,\n        verbose=0\n    )\n\n    print(\n\
+          \        \"Test Loss:\",\n        loss\n    )\n\n    print(\n        \"\
+          Test Accuracy:\",\n        accuracy\n    )\n\n    # --------------------------------------------------------\n\
+          \    # 10. Test prediction\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[10] Testing prediction\")\n\n    sample = np.array([\n\
+          \        [5.1, 3.5, 1.4, 0.2]\n    ])\n\n    prediction = model.predict(\n\
+          \        sample,\n        verbose=0\n    )\n\n    predicted_class = int(\n\
+          \        np.argmax(prediction[0])\n    )\n\n    print(\n        \"Prediction\
+          \ probabilities:\",\n        prediction\n    )\n\n    print(\n        \"\
+          Predicted class:\",\n        predicted_class\n    )\n\n    print(\n    \
+          \    \"Predicted flower:\",\n        iris.target_names[predicted_class]\n\
+          \    )\n\n    # --------------------------------------------------------\n\
+          \    # 11. Model metadata\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[11] Setting model metadata\")\n\n    model_output.metadata[\"\
+          framework\"] = \"tensorflow\"\n\n    model_output.metadata[\"dataset\"]\
+          \ = \"iris\"\n\n    model_output.metadata[\"accuracy\"] = float(\n     \
+          \   accuracy\n    )\n\n    # --------------------------------------------------------\n\
+          \    # 12. Export SavedModel\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[12] Exporting TensorFlow SavedModel\")\n\n    print(\n\
+          \        \"Output path:\",\n        model_output.path\n    )\n\n    os.makedirs(\n\
+          \        model_output.path,\n        exist_ok=True\n    )\n\n    model.export(\n\
+          \        model_output.path\n    )\n\n    print(\"\\nModel exported successfully\"\
+          )\n\n    # --------------------------------------------------------\n  \
+          \  # 13. Verify\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[13] Verifying model\")\n\n    print(\n        \"Model\
+          \ directory exists:\",\n        os.path.exists(\n            model_output.path\n\
+          \        )\n    )\n\n    print(\n        \"Model files:\"\n    )\n\n   \
+          \ for root, dirs, files in os.walk(\n        model_output.path\n    ):\n\
+          \n        for file in files:\n\n            print(\n                os.path.join(\n\
+          \                    root,\n                    file\n                )\n\
+          \            )\n\n    print(\"\\n\" + \"=\" * 60)\n    print(\"IRIS TENSORFLOW\
+          \ TRAINING COMPLETED\")\n    print(\"=\" * 60)\n\n"
+        image: tensorflow/tensorflow:2.16.1
+pipelineInfo:
+  description: Simple TensorFlow Iris training pipeline
+  name: iris-tensorflow-simple
+root:
+  dag:
+    tasks:
+      train-iris-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train-iris-model
+        taskInfo:
+          name: train-iris-model
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.11.0

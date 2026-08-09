@@ -1,0 +1,588 @@
+# PIPELINE DEFINITION
+# Name: iris-tensorflow-kserve
+# Description: Iris TensorFlow training, validation and direct MinIO upload
+# Inputs:
+#    batch_size: int [Default: 16.0]
+#    bucket_name: str [Default: 'models']
+#    epochs: int [Default: 30.0]
+#    hidden_units: int [Default: 16.0]
+#    learning_rate: float [Default: 0.001]
+#    minio_access_key: str [Default: 'minio']
+#    minio_endpoint: str [Default: 'http://minio.kubeflow.svc.cluster.local:9000']
+#    minio_secret_key: str [Default: 'minio123']
+#    model_prefix: str [Default: 'iris/1']
+components:
+  comp-evaluate:
+    executorLabel: exec-evaluate
+    inputDefinitions:
+      artifacts:
+        model_input:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+        test_dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        metrics_output:
+          artifactType:
+            schemaTitle: system.Metrics
+            schemaVersion: 0.0.1
+  comp-load-iris:
+    executorLabel: exec-load-iris
+    outputDefinitions:
+      artifacts:
+        dataset_output:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-preprocess:
+    executorLabel: exec-preprocess
+    inputDefinitions:
+      artifacts:
+        input_dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        test_output:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        train_output:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-train-tensorflow:
+    executorLabel: exec-train-tensorflow
+    inputDefinitions:
+      artifacts:
+        train_dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        batch_size:
+          defaultValue: 16.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+        epochs:
+          defaultValue: 30.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+        hidden_units:
+          defaultValue: 16.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+        learning_rate:
+          defaultValue: 0.001
+          isOptional: true
+          parameterType: NUMBER_DOUBLE
+    outputDefinitions:
+      artifacts:
+        model_output:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+  comp-upload-to-minio:
+    executorLabel: exec-upload-to-minio
+    inputDefinitions:
+      artifacts:
+        model_input:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+      parameters:
+        bucket_name:
+          parameterType: STRING
+        minio_access_key:
+          parameterType: STRING
+        minio_endpoint:
+          parameterType: STRING
+        minio_secret_key:
+          parameterType: STRING
+        model_prefix:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-evaluate:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - evaluate
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.11.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'pandas' 'numpy'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef evaluate(\n    test_dataset: dsl.Input[dsl.Dataset],\n\n    model_input:\
+          \ dsl.Input[dsl.Model],\n\n    metrics_output: dsl.Output[dsl.Metrics]\n\
+          ):\n\n    import numpy as np\n\n    import pandas as pd\n\n    import tensorflow\
+          \ as tf\n\n    print(\"=\" * 70)\n    print(\"COMPONENT 4: EVALUATION\"\
+          )\n    print(\"=\" * 70)\n\n    df = pd.read_csv(\n        test_dataset.path\n\
+          \    )\n\n    features = [\n        \"sepal_length\",\n        \"sepal_width\"\
+          ,\n        \"petal_length\",\n        \"petal_width\"\n    ]\n\n    X_test\
+          \ = df[\n        features\n    ].values.astype(\n        np.float32\n  \
+          \  )\n\n    y_test = df[\n        \"target\"\n    ].values.astype(\n   \
+          \     np.int32\n    )\n\n    print(\n        \"Test samples:\",\n      \
+          \  len(X_test)\n    )\n\n    # --------------------------------------------------------\n\
+          \    # LOAD SAVEDMODEL\n    # --------------------------------------------------------\n\
+          \n    print(\"\\nLoading SavedModel\")\n\n    model = tf.saved_model.load(\n\
+          \        model_input.path\n    )\n\n    print(\n        \"SavedModel loaded\"\
+          \n    )\n\n    print(\n        \"Signatures:\",\n        list(\n       \
+          \     model.signatures.keys()\n        )\n    )\n\n    # --------------------------------------------------------\n\
+          \    # PREDICT\n    # --------------------------------------------------------\n\
+          \n    infer = model.signatures[\n        \"serving_default\"\n    ]\n\n\
+          \    predictions = infer(\n        tf.constant(X_test)\n    )\n\n    output_tensor\
+          \ = list(\n        predictions.values()\n    )[0]\n\n    predicted_classes\
+          \ = tf.argmax(\n        output_tensor,\n        axis=1\n    ).numpy()\n\n\
+          \    accuracy = float(\n        np.mean(\n            predicted_classes\
+          \ == y_test\n        )\n    )\n\n    print(\n        \"\\nTest accuracy:\"\
+          ,\n        accuracy\n    )\n\n    metrics_output.log_metric(\n        \"\
+          test_accuracy\",\n        accuracy\n    )\n\n    print(\"\\nCOMPONENT 4\
+          \ COMPLETED\")\n\n"
+        image: tensorflow/tensorflow:2.16.1
+    exec-load-iris:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - load_iris
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.11.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'scikit-learn'\
+          \ 'pandas' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef load_iris(\n    dataset_output: dsl.Output[dsl.Dataset]\n):\n\
+          \n    import pandas as pd\n\n    from sklearn.datasets import load_iris\n\
+          \n    print(\"=\" * 70)\n    print(\"COMPONENT 1: LOAD IRIS\")\n    print(\"\
+          =\" * 70)\n\n    iris = load_iris()\n\n    df = pd.DataFrame(\n        iris.data,\n\
+          \        columns=[\n            \"sepal_length\",\n            \"sepal_width\"\
+          ,\n            \"petal_length\",\n            \"petal_width\"\n        ]\n\
+          \    )\n\n    df[\"target\"] = iris.target\n\n    print(\"Dataset shape:\"\
+          , df.shape)\n\n    print(\"\\nClasses:\")\n    print(iris.target_names)\n\
+          \n    print(\"\\nFirst rows:\")\n    print(df.head())\n\n    df.to_csv(\n\
+          \        dataset_output.path,\n        index=False\n    )\n\n    print(\n\
+          \        \"\\nDataset saved to:\",\n        dataset_output.path\n    )\n\
+          \n    print(\"\\nCOMPONENT 1 COMPLETED\")\n\n"
+        image: python:3.11
+    exec-preprocess:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - preprocess
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.11.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'pandas' 'scikit-learn'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef preprocess(\n    input_dataset: dsl.Input[dsl.Dataset],\n\n \
+          \   train_output: dsl.Output[dsl.Dataset],\n\n    test_output: dsl.Output[dsl.Dataset]\n\
+          ):\n\n    import pandas as pd\n\n    from sklearn.model_selection import\
+          \ train_test_split\n\n    print(\"=\" * 70)\n    print(\"COMPONENT 2: PREPROCESS\"\
+          )\n    print(\"=\" * 70)\n\n    df = pd.read_csv(\n        input_dataset.path\n\
+          \    )\n\n    print(\n        \"Input dataset:\",\n        df.shape\n  \
+          \  )\n\n    train_df, test_df = train_test_split(\n\n        df,\n\n   \
+          \     test_size=0.20,\n\n        random_state=42,\n\n        stratify=df[\"\
+          target\"]\n    )\n\n    print(\n        \"Train:\",\n        train_df.shape\n\
+          \    )\n\n    print(\n        \"Test:\",\n        test_df.shape\n    )\n\
+          \n    train_df.to_csv(\n        train_output.path,\n        index=False\n\
+          \    )\n\n    test_df.to_csv(\n        test_output.path,\n        index=False\n\
+          \    )\n\n    print(\"\\nTrain saved\")\n\n    print(\"Test saved\")\n\n\
+          \    print(\"\\nCOMPONENT 2 COMPLETED\")\n\n"
+        image: python:3.11
+    exec-train-tensorflow:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - train_tensorflow
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.11.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'pandas' 'numpy'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef train_tensorflow(\n    train_dataset: dsl.Input[dsl.Dataset],\n\
+          \n    model_output: dsl.Output[dsl.Model],\n\n    learning_rate: float =\
+          \ 0.001,\n\n    hidden_units: int = 16,\n\n    batch_size: int = 16,\n\n\
+          \    epochs: int = 30\n):\n\n    import os\n\n    import numpy as np\n\n\
+          \    import pandas as pd\n\n    import tensorflow as tf\n\n    print(\"\
+          =\" * 70)\n    print(\"COMPONENT 3: TENSORFLOW TRAINING\")\n    print(\"\
+          =\" * 70)\n\n    print(\n        \"TensorFlow:\",\n        tf.__version__\n\
+          \    )\n\n    # --------------------------------------------------------\n\
+          \    # LOAD DATA\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[1] Loading training data\")\n\n    df = pd.read_csv(\n\
+          \        train_dataset.path\n    )\n\n    features = [\n        \"sepal_length\"\
+          ,\n        \"sepal_width\",\n        \"petal_length\",\n        \"petal_width\"\
+          \n    ]\n\n    X = df[\n        features\n    ].values.astype(\n       \
+          \ np.float32\n    )\n\n    y = df[\n        \"target\"\n    ].values.astype(\n\
+          \        np.int32\n    )\n\n    print(\n        \"X:\",\n        X.shape\n\
+          \    )\n\n    print(\n        \"Y:\",\n        y.shape\n    )\n\n    # --------------------------------------------------------\n\
+          \    # NORMALIZATION\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[2] Creating normalization layer\")\n\n    normalizer =\
+          \ tf.keras.layers.Normalization()\n\n    normalizer.adapt(X)\n\n    # --------------------------------------------------------\n\
+          \    # MODEL\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[3] Building model\")\n\n    model = tf.keras.Sequential([\n\
+          \n        tf.keras.layers.Input(\n            shape=(4,),\n            name=\"\
+          features\"\n        ),\n\n        normalizer,\n\n        tf.keras.layers.Dense(\n\
+          \            hidden_units,\n            activation=\"relu\"\n        ),\n\
+          \n        tf.keras.layers.Dense(\n            8,\n            activation=\"\
+          relu\"\n        ),\n\n        tf.keras.layers.Dense(\n            3,\n \
+          \           activation=\"softmax\"\n        )\n    ])\n\n    model.summary()\n\
+          \n    # --------------------------------------------------------\n    #\
+          \ COMPILE\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[4] Compiling model\")\n\n    model.compile(\n\n      \
+          \  optimizer=tf.keras.optimizers.Adam(\n            learning_rate=learning_rate\n\
+          \        ),\n\n        loss=\"sparse_categorical_crossentropy\",\n\n   \
+          \     metrics=[\"accuracy\"]\n    )\n\n    # --------------------------------------------------------\n\
+          \    # TRAIN\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[5] Training\")\n\n    history = model.fit(\n\n       \
+          \ X,\n\n        y,\n\n        epochs=epochs,\n\n        batch_size=batch_size,\n\
+          \n        verbose=1\n    )\n\n    accuracy = float(\n        history.history[\"\
+          accuracy\"][-1]\n    )\n\n    loss = float(\n        history.history[\"\
+          loss\"][-1]\n    )\n\n    print(\n        \"\\nFinal accuracy:\",\n    \
+          \    accuracy\n    )\n\n    print(\n        \"Final loss:\",\n        loss\n\
+          \    )\n\n    # --------------------------------------------------------\n\
+          \    # MODEL METADATA\n    # --------------------------------------------------------\n\
+          \n    model_output.metadata[\"framework\"] = \"tensorflow\"\n\n    model_output.metadata[\"\
+          framework_version\"] = tf.__version__\n\n    model_output.metadata[\"dataset\"\
+          ] = \"iris\"\n\n    model_output.metadata[\"accuracy\"] = accuracy\n\n \
+          \   model_output.metadata[\"loss\"] = loss\n\n    # --------------------------------------------------------\n\
+          \    # SAVEDMODEL\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[6] Exporting TensorFlow SavedModel\")\n\n    model_dir\
+          \ = model_output.path\n\n    os.makedirs(\n        model_dir,\n        exist_ok=True\n\
+          \    )\n\n    print(\n        \"Model directory:\",\n        model_dir\n\
+          \    )\n\n    # IMPORTANT:\n    # KServe needs SavedModel.\n    # DO NOT\
+          \ use model.save(\"directory\").\n    #\n    # model.export() creates TensorFlow\
+          \ SavedModel.\n\n    model.export(\n        model_dir\n    )\n\n    # --------------------------------------------------------\n\
+          \    # VALIDATE SAVEDMODEL\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[7] Validating SavedModel\")\n\n    saved_model_pb = os.path.join(\n\
+          \        model_dir,\n        \"saved_model.pb\"\n    )\n\n    variables_dir\
+          \ = os.path.join(\n        model_dir,\n        \"variables\"\n    )\n\n\
+          \    print(\n        \"saved_model.pb:\",\n        saved_model_pb\n    )\n\
+          \n    print(\n        \"Exists:\",\n        os.path.exists(\n          \
+          \  saved_model_pb\n        )\n    )\n\n    print(\n        \"variables:\"\
+          ,\n        variables_dir\n    )\n\n    print(\n        \"Exists:\",\n  \
+          \      os.path.exists(\n            variables_dir\n        )\n    )\n\n\
+          \    if not os.path.isfile(\n        saved_model_pb\n    ):\n\n        raise\
+          \ RuntimeError(\n            \"saved_model.pb was NOT created\"\n      \
+          \  )\n\n    if not os.path.isdir(\n        variables_dir\n    ):\n\n   \
+          \     raise RuntimeError(\n            \"variables directory was NOT created\"\
+          \n        )\n\n    # --------------------------------------------------------\n\
+          \    # SHOW ALL FILES\n    # --------------------------------------------------------\n\
+          \n    print(\"\\n[8] SavedModel files\")\n\n    for root, dirs, files in\
+          \ os.walk(\n        model_dir\n    ):\n\n        for file in files:\n\n\
+          \            path = os.path.join(\n                root,\n             \
+          \   file\n            )\n\n            print(\n                path,\n \
+          \               \"|\",\n                os.path.getsize(path),\n       \
+          \         \"bytes\"\n            )\n\n    print(\"\\n\" + \"=\" * 70)\n\
+          \    print(\"SAVEDMODEL CREATED SUCCESSFULLY\")\n    print(\"=\" * 70)\n\
+          \n"
+        image: tensorflow/tensorflow:2.16.1
+    exec-upload-to-minio:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - upload_to_minio
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.11.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'boto3' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef upload_to_minio(\n\n    model_input: dsl.Input[dsl.Model],\n\n\
+          \    minio_endpoint: str,\n\n    minio_access_key: str,\n\n    minio_secret_key:\
+          \ str,\n\n    bucket_name: str,\n\n    model_prefix: str\n):\n\n    import\
+          \ os\n\n    import boto3\n\n    print(\"=\" * 70)\n    print(\"COMPONENT\
+          \ 5: DIRECT MINIO UPLOAD\")\n    print(\"=\" * 70)\n\n    model_dir = model_input.path\n\
+          \n    print(\n        \"Local model path:\",\n        model_dir\n    )\n\
+          \n    # --------------------------------------------------------\n    #\
+          \ CHECK MODEL\n    # --------------------------------------------------------\n\
+          \n    if not os.path.isdir(\n        model_dir\n    ):\n\n        raise\
+          \ RuntimeError(\n            f\"Model directory does not exist: {model_dir}\"\
+          \n        )\n\n    saved_model = os.path.join(\n        model_dir,\n   \
+          \     \"saved_model.pb\"\n    )\n\n    if not os.path.isfile(\n        saved_model\n\
+          \    ):\n\n        raise RuntimeError(\n            \"saved_model.pb does\
+          \ not exist\"\n        )\n\n    print(\n        \"saved_model.pb found\"\
+          \n    )\n\n    # --------------------------------------------------------\n\
+          \    # CREATE MINIO CLIENT\n    # --------------------------------------------------------\n\
+          \n    print(\n        \"\\nConnecting to MinIO:\"\n    )\n\n    print(\n\
+          \        minio_endpoint\n    )\n\n    s3 = boto3.client(\n\n        \"s3\"\
+          ,\n\n        endpoint_url=minio_endpoint,\n\n        aws_access_key_id=minio_access_key,\n\
+          \n        aws_secret_access_key=minio_secret_key,\n\n        region_name=\"\
+          us-east-1\"\n    )\n\n    # --------------------------------------------------------\n\
+          \    # CONNECTION TEST\n    # --------------------------------------------------------\n\
+          \n    print(\n        \"\\nTesting MinIO connection...\"\n    )\n\n    try:\n\
+          \n        response = s3.list_buckets()\n\n        print(\n            \"\
+          MinIO connection successful\"\n        )\n\n        print(\n           \
+          \ \"Available buckets:\"\n        )\n\n        for bucket in response.get(\n\
+          \            \"Buckets\",\n            []\n        ):\n\n            print(\n\
+          \                \"-\",\n                bucket[\"Name\"]\n            )\n\
+          \n    except Exception as e:\n\n        print(\n            \"\\nMINIO CONNECTION\
+          \ FAILED\"\n        )\n\n        print(\n            type(e).__name__,\n\
+          \            str(e)\n        )\n\n        raise\n\n    # --------------------------------------------------------\n\
+          \    # BUCKET\n    # --------------------------------------------------------\n\
+          \n    print(\n        \"\\nChecking bucket:\",\n        bucket_name\n  \
+          \  )\n\n    try:\n\n        s3.head_bucket(\n            Bucket=bucket_name\n\
+          \        )\n\n        print(\n            \"Bucket exists\"\n        )\n\
+          \n    except Exception:\n\n        print(\n            \"Bucket does not\
+          \ exist\"\n        )\n\n        print(\n            \"Creating bucket...\"\
+          \n        )\n\n        s3.create_bucket(\n            Bucket=bucket_name\n\
+          \        )\n\n        print(\n            \"Bucket created\"\n        )\n\
+          \n    # --------------------------------------------------------\n    #\
+          \ UPLOAD ALL FILES\n    # --------------------------------------------------------\n\
+          \n    print(\n        \"\\nUploading model...\"\n    )\n\n    uploaded_count\
+          \ = 0\n\n    for root, dirs, files in os.walk(\n        model_dir\n    ):\n\
+          \n        for file in files:\n\n            local_path = os.path.join(\n\
+          \                root,\n                file\n            )\n\n        \
+          \    relative_path = os.path.relpath(\n                local_path,\n   \
+          \             model_dir\n            )\n\n            relative_path = relative_path.replace(\n\
+          \                \"\\\\\",\n                \"/\"\n            )\n\n   \
+          \         object_name = (\n                model_prefix\n              \
+          \  + \"/\"\n                + relative_path\n            )\n\n         \
+          \   print(\n                \"\\nUploading:\"\n            )\n\n       \
+          \     print(\n                \"LOCAL:\",\n                local_path\n\
+          \            )\n\n            print(\n                \"OBJECT:\",\n   \
+          \             object_name\n            )\n\n            s3.upload_file(\n\
+          \n                local_path,\n\n                bucket_name,\n\n      \
+          \          object_name\n            )\n\n            print(\n          \
+          \      \"UPLOAD SUCCESS\"\n            )\n\n            uploaded_count +=\
+          \ 1\n\n    if uploaded_count == 0:\n\n        raise RuntimeError(\n    \
+          \        \"No model files uploaded\"\n        )\n\n    # --------------------------------------------------------\n\
+          \    # VERIFY MINIO\n    # --------------------------------------------------------\n\
+          \n    print(\n        \"\\nVerifying uploaded model...\"\n    )\n\n    response\
+          \ = s3.list_objects_v2(\n\n        Bucket=bucket_name,\n\n        Prefix=model_prefix\n\
+          \    )\n\n    objects = response.get(\n        \"Contents\",\n        []\n\
+          \    )\n\n    if len(objects) == 0:\n\n        raise RuntimeError(\n   \
+          \         \"Model was not found in MinIO\"\n        )\n\n    print(\n  \
+          \      \"\\nObjects in MinIO:\"\n    )\n\n    for obj in objects:\n\n  \
+          \      print(\n            obj[\"Key\"],\n            \"|\",\n         \
+          \   obj[\"Size\"],\n            \"bytes\"\n        )\n\n    print(\"\\n\"\
+          \ + \"=\" * 70)\n\n    print(\n        \"MODEL UPLOADED SUCCESSFULLY\"\n\
+          \    )\n\n    print(\n        \"KServe URI:\"\n    )\n\n    print(\n   \
+          \     f\"s3://{bucket_name}/{model_prefix}\"\n    )\n\n    print(\"=\" *\
+          \ 70)\n\n"
+        image: python:3.11
+pipelineInfo:
+  description: Iris TensorFlow training, validation and direct MinIO upload
+  name: iris-tensorflow-kserve
+root:
+  dag:
+    tasks:
+      evaluate:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-evaluate
+        dependentTasks:
+        - preprocess
+        - train-tensorflow
+        inputs:
+          artifacts:
+            model_input:
+              taskOutputArtifact:
+                outputArtifactKey: model_output
+                producerTask: train-tensorflow
+            test_dataset:
+              taskOutputArtifact:
+                outputArtifactKey: test_output
+                producerTask: preprocess
+        taskInfo:
+          name: evaluate
+      load-iris:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-load-iris
+        taskInfo:
+          name: load-iris
+      preprocess:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-preprocess
+        dependentTasks:
+        - load-iris
+        inputs:
+          artifacts:
+            input_dataset:
+              taskOutputArtifact:
+                outputArtifactKey: dataset_output
+                producerTask: load-iris
+        taskInfo:
+          name: preprocess
+      train-tensorflow:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train-tensorflow
+        dependentTasks:
+        - preprocess
+        inputs:
+          artifacts:
+            train_dataset:
+              taskOutputArtifact:
+                outputArtifactKey: train_output
+                producerTask: preprocess
+          parameters:
+            batch_size:
+              componentInputParameter: batch_size
+            epochs:
+              componentInputParameter: epochs
+            hidden_units:
+              componentInputParameter: hidden_units
+            learning_rate:
+              componentInputParameter: learning_rate
+        taskInfo:
+          name: train-tensorflow
+      upload-to-minio:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-upload-to-minio
+        dependentTasks:
+        - train-tensorflow
+        inputs:
+          artifacts:
+            model_input:
+              taskOutputArtifact:
+                outputArtifactKey: model_output
+                producerTask: train-tensorflow
+          parameters:
+            bucket_name:
+              componentInputParameter: bucket_name
+            minio_access_key:
+              componentInputParameter: minio_access_key
+            minio_endpoint:
+              componentInputParameter: minio_endpoint
+            minio_secret_key:
+              componentInputParameter: minio_secret_key
+            model_prefix:
+              componentInputParameter: model_prefix
+        taskInfo:
+          name: upload-to-minio
+  inputDefinitions:
+    parameters:
+      batch_size:
+        defaultValue: 16.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      bucket_name:
+        defaultValue: models
+        isOptional: true
+        parameterType: STRING
+      epochs:
+        defaultValue: 30.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      hidden_units:
+        defaultValue: 16.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      learning_rate:
+        defaultValue: 0.001
+        isOptional: true
+        parameterType: NUMBER_DOUBLE
+      minio_access_key:
+        defaultValue: minio
+        isOptional: true
+        parameterType: STRING
+      minio_endpoint:
+        defaultValue: http://minio.kubeflow.svc.cluster.local:9000
+        isOptional: true
+        parameterType: STRING
+      minio_secret_key:
+        defaultValue: minio123
+        isOptional: true
+        parameterType: STRING
+      model_prefix:
+        defaultValue: iris/1
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.11.0
