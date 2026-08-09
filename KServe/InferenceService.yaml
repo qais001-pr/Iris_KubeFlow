@@ -1,0 +1,22 @@
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: iris-classifier
+  namespace: user1
+spec:
+  predictor:
+    serviceAccountName: kserve-minio-sa
+
+    model:
+      modelFormat:
+        name: tensorflow
+
+      storageUri: s3://models/iris
+
+      resources:
+        requests:
+          cpu: "60m"
+          memory: "64Mi"
+        limits:
+          cpu: "100m"
+          memory: "128Mi"
